@@ -25,10 +25,15 @@ class FinancialDataLoader(Dataset):
             self.mean = np.mean(self.X, axis=0)
             self.std = np.std(self.X, axis=0) + 1e-8  # Avoid division by zero
             self.X = (self.X - self.mean) / self.std
+        # Detect available device (CUDA if available, otherwise CPU)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     def __len__(self):
         return len(self.X)
     def __getitem__(self, idx):
-        return torch.tensor(self.X[idx]), torch.tensor(self.y[idx])
+        # Load data as tensors and send them to the correct device (CUDA or CPU)
+        X_tensor = torch.tensor(self.X[idx]).to(self.device)
+        y_tensor = torch.tensor(self.y[idx]).to(self.device)
+        return X_tensor, y_tensor
     def get_data_loader(self, batch_size=32, shuffle=True):
         """
         Returns a DataLoader for batch processing.
@@ -36,14 +41,3 @@ class FinancialDataLoader(Dataset):
         :param shuffle: Whether to shuffle the dataset.
         """
         return DataLoader(self, batch_size=batch_size, shuffle=shuffle)
-
-
-
-
-
-
-
-
-
-
-
