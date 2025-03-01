@@ -6,51 +6,12 @@ from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from hmm_model import HiddenMarkovModel
+from data_processor import FinancialDataLoader
 # Set device to CUDA if available
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f'Using device: {device}')
-class FinancialDataLoader(Dataset):
-    def __init__(self, file_path, target_column, features, normalize=True):
-        """
-        Custom PyTorch Dataset for loading financial data.
-        :param file_path: Path to the cleaned financial dataset.
-        :param target_column: The column to predict.
-        :param features: List of feature columns to use.
-        :param normalize: Whether to normalize the features.
-        """
-        self.data = pd.read_csv(file_path)
-        print(self.data.columns)
-        print(self.data.head())
-        self.features = features
-        self.target_column = target_column
-        self.normalize = normalize
-        self.X = self.data[features].values.astype(np.float32)
-        self.y = self.data[target_column].values.astype(np.float32)
-        if self.normalize:
-            self.mean = np.mean(self.X, axis=0)
-            self.std = np.std(self.X, axis=0) + 1e-8
-            self.X = (self.X - self.mean) / self.std
-    def __len__(self):
-        return len(self.X)
-    def __getitem__(self, idx):
-        return torch.tensor(self.X[idx]), torch.tensor(self.y[idx])
-    def get_data_loader(self, batch_size=32, shuffle=True):
-        return DataLoader(self, batch_size=batch_size, shuffle=shuffle)
-    def train_test_split(self, test_size=0.2, random_state=42):
-        X_train, X_test, y_train, y_test = train_test_split(self.X, self.y, test_size=test_size, random_state=random_state)
-        train_dataset = FinancialDatasetSplit(X_train, y_train)
-        test_dataset = FinancialDatasetSplit(X_test, y_test)
-        return train_dataset, test_dataset
-class FinancialDatasetSplit(Dataset):
-    def __init__(self, X, y):
-        self.X = X
-        self.y = y
-    def __len__(self):
-        return len(self.X)
-    def __getitem__(self, idx):
-        return torch.tensor(self.X[idx]), torch.tensor(self.y[idx])
-    def get_data_loader(self, batch_size=32, shuffle=True):
-        return DataLoader(self, batch_size=batch_size, shuffle=shuffle)
+
 def discretize_data(data, num_states=10):
     bins = np.percentile(data, np.linspace(0, 100, num_states+1))
     bins = np.unique(bins)
@@ -73,16 +34,18 @@ def train_hmm(X_train, num_states, num_observations, max_steps=20):
     print("Training HMM...")
     T0, T, E, converged = hmm.Baum_Welch_EM(obs_seq)
     return hmm
+
 def evaluate_hmm(hmm, X_test, y_test):
     states_seq, prob_scores = hmm.viterbi_inference(X_test)
     states_seq = states_seq.numpy()
     correlation = np.corrcoef(states_seq, y_test)[0, 1]
     return {"correlation": correlation, "states_seq": states_seq, "prob_scores": prob_scores.numpy()}
+
 def main():
     file_path = "financial_data.csv"  # Replace with your file path
-    target_column = "price_movement"  # Replace with your target column
-    features = ["volume", "open", "close", "high", "low"]  # Replace with your features
-    num_states = 5  # Number of hidden states in HMM
+    target_column = "sp500 close",  # Replace with your target column
+    features = ['sp500 open', 'sp500 high', 'sp500 low', 'sp500 volume']
+    num_states = 3  # Number of hidden states in HMM
     num_observations = 10  # Number of discrete observation values
     batch_size = 64
     data_loader = FinancialDataLoader(file_path, target_column, features, normalize=True)

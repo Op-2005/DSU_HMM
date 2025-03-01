@@ -30,13 +30,16 @@ class HiddenMarkovModel(object):
         self.T = torch.tensor(T, dtype=torch.float64, device=self.device)
         # Initial state vector
         self.T0 = torch.tensor(T0, dtype=torch.float64, device=self.device)
+
     def initialize_viterbi_variables(self, shape):
         pathStates = torch.zeros(shape, dtype=torch.float64, device=self.device)
         pathScores = torch.zeros_like(pathStates)
         states_seq = torch.zeros([shape[0]], dtype=torch.int64, device=self.device)
         return pathStates, pathScores, states_seq
+
     def belief_propagation(self, scores):
         return scores.view(-1, 1) + torch.log(self.T)
+
     def viterbi_inference(self, x): # x: observing sequence
         self.N = len(x)
         shape = [self.N, self.S]
@@ -61,10 +64,12 @@ class HiddenMarkovModel(object):
             state_prob = pathStates[step][state]
             states_seq[step - 1] = state_prob
         return states_seq, torch.exp(pathScores) # turn scores back to probabilities
+
     def initialize_forw_back_variables(self, shape):
         self.forward = torch.zeros(shape, dtype=torch.float64, device=self.device)
         self.backward = torch.zeros_like(self.forward)
         self.posterior = torch.zeros_like(self.forward)
+        
     def _forward(self, obs_prob_seq):
         self.scale = torch.zeros([self.N], dtype=torch.float64, device=self.device) # scale factors
         # initialize with state starting priors
