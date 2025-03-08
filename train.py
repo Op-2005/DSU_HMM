@@ -5,43 +5,25 @@ import matplotlib.pyplot as plt
 import os
 import time
 from tqdm import tqdm
+import argparse
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
-# Import the HMM class
+from data_processor import FinancialDataLoader, discretize_data, map_bins_to_values 
 from hmm_model import HiddenMarkovModel
 
-# Set random seed for reproducibility
 np.random.seed(42)
 torch.manual_seed(42)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(42)
 
-# Set device to CUDA if available
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = 'cpu'
 print(f"Using device: {device}")
 
 def load_financial_data(file_path, normalize=True):
-    """
-    Load and preprocess financial data
-    
-    Parameters:
-    -----------
-    file_path: Path to CSV file
-    normalize: Whether to normalize features
-    
-    Returns:
-    --------
-    data: Pandas DataFrame
-    """
     print(f"Loading data from {file_path}")
     
-    # Check if file exists
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
     
-    # Load data
     data = pd.read_csv(file_path)
-    
-    # Clean column names (strip spaces)
     data.columns = data.columns.str.strip()
     
     print(f"Loaded data with shape {data.shape}")
@@ -50,52 +32,31 @@ def load_financial_data(file_path, normalize=True):
     return data
 
 def prepare_data(data, features, target_column, test_size=0.2, normalize=True):
-    """
-    Prepare data for HMM training
-    
-    Parameters:
-    -----------
-    data: Pandas DataFrame
-    features: List of feature columns
-    target_column: Target column for prediction
-    test_size: Proportion of test data
-    normalize: Whether to normalize features
-    
-    Returns:
-    --------
-    X_train, X_test, y_train, y_test, scaler_params
-    """
-    # Ensure target column exists
     if target_column not in data.columns:
         raise ValueError(f"Target column '{target_column}' not found in data. Available columns: {', '.join(data.columns)}")
     
-    # Ensure all feature columns exist
     for feat in features:
         if feat not in data.columns:
             raise ValueError(f"Feature column '{feat}' not found in data. Available columns: {', '.join(data.columns)}")
     
-    # Drop rows with NaN in features or target
     subset_cols = [target_column] + features
     data_clean = data.dropna(subset=subset_cols)
     
     print(f"Dropped {len(data) - len(data_clean)} rows with NaN values")
     
-    # Extract features and target
     X = data_clean[features].values.astype(np.float32)
     y = data_clean[target_column].values.astype(np.float32)
     
-    # Split train and test
     split_idx = int(len(X) * (1 - test_size))
     X_train, X_test = X[:split_idx], X[split_idx:]
     y_train, y_test = y[:split_idx], y[split_idx:]
     
     print(f"Train set: {X_train.shape[0]} samples, Test set: {X_test.shape[0]} samples")
     
-    # Normalize if requested
     scaler_params = {}
     if normalize:
         mean = np.mean(X_train, axis=0)
-        std = np.std(X_train, axis=0) + 1e-8  # Avoid division by zero
+        std = np.std(X_train, axis=0) + 1e-8
         
         X_train = (X_train - mean) / std
         X_test = (X_test - mean) / std
@@ -105,110 +66,34 @@ def prepare_data(data, features, target_column, test_size=0.2, normalize=True):
     
     return X_train, X_test, y_train, y_test, scaler_params
 
-def discretize_data(data, num_bins=10, strategy='equal_freq'):
-    """
-    Discretize continuous data for HMM processing.
-    
-    Parameters:
-    -----------
-    data: Continuous data array
-    num_bins: Number of discrete bins to create
-    strategy: 'equal_width' or 'equal_freq'
-    
-    Returns:
-    --------
-    Discretized data as integers
-    """
-    flat_data = data.flatten() if len(data.shape) > 1 else data
-    
-    if strategy == 'equal_width':
-        # Equal width binning
-        min_val = np.min(flat_data)
-        max_val = np.max(flat_data)
-        bins = np.linspace(min_val, max_val, num_bins + 1)
-    elif strategy == 'equal_freq':
-        # Equal frequency binning
-        bins = np.percentile(flat_data, np.linspace(0, 100, num_bins + 1))
-    else:
-        raise ValueError(f"Unknown discretization strategy: {strategy}")
-    
-    # Ensure unique bin edges
-    bins = np.unique(bins)
-    
-    # Digitize the data (assign bin indices)
-    discretized = np.digitize(flat_data, bins) - 1
-    
-    # Cap maximum state to num_bins-1
-    discretized = np.minimum(discretized, num_bins - 1)
-    
-    # Reshape back to original shape if needed
-    return discretized.reshape(data.shape).astype(np.int64)
-
 def initialize_hmm_params(num_states, num_observations):
-    """
-    Initialize HMM parameters with some randomness to break symmetry.
-    
-    Parameters:
-    -----------
-    num_states: Number of hidden states
-    num_observations: Number of possible observation values
-    
-    Returns:
-    --------
-    T, E, T0: Initial transition, emission, and initial state probabilities
-    """
-    # Initialize transition matrix (rows sum to 1)
     T = np.ones((num_states, num_states)) / num_states
     T = T + np.random.uniform(0, 0.1, T.shape)
     T = T / T.sum(axis=1, keepdims=True)
     
-    # Initialize emission matrix (rows sum to 1)
     E = np.ones((num_observations, num_states)) / num_states
     E = E + np.random.uniform(0, 0.1, E.shape)
     E = E / E.sum(axis=1, keepdims=True)
     
-    # Initialize initial state probabilities (sums to 1)
     T0 = np.ones(num_states) / num_states
     
     return T, E, T0
 
-def train_hmm(X_train_discrete, num_states, num_observations, max_steps=20, precision='double'):
-    """
-    Train HMM model on financial data.
-    
-    Parameters:
-    -----------
-    X_train_discrete: Discretized training data (integers)
-    num_states: Number of hidden states for the HMM
-    num_observations: Number of possible observation values
-    max_steps: Maximum number of Baum-Welch steps
-    precision: 'double' or 'single' precision
-    
-    Returns:
-    --------
-    hmm: Trained HMM model
-    """
+def train_hmm(X_train_discrete, num_states, num_observations, max_steps=20):
     print("\n" + "="*50)
     print(f"Training HMM with {num_states} states and {num_observations} observations")
     print("="*50)
     
-    # Initialize HMM parameters
     T, E, T0 = initialize_hmm_params(num_states, num_observations)
     
-    # Create HMM model on specified device
-    hmm = HiddenMarkovModel(T, E, T0, device=device, epsilon=0.001, maxStep=max_steps)
+    hmm = HiddenMarkovModel(T, E, T0, device='cpu', epsilon=0.001, maxStep=max_steps)
     
-    # Convert to tensor if not already
     if not isinstance(X_train_discrete, torch.Tensor):
-        X_train_discrete = torch.tensor(X_train_discrete, dtype=torch.int64, device=device)
-    elif X_train_discrete.device != device:
-        X_train_discrete = X_train_discrete.to(device)
+        X_train_discrete = torch.tensor(X_train_discrete, dtype=torch.int64)
     
-    # Train model
-    print(f"Running Baum-Welch EM algorithm on device: {device}")
+    print(f"Running Baum-Welch EM algorithm")
     start_time = time.time()
     
-    # Run a single epoch (EM step) if single_epoch is True
     T0, T, E, converged = hmm.Baum_Welch_EM(X_train_discrete)
     
     elapsed_time = time.time() - start_time
@@ -221,139 +106,34 @@ def train_hmm(X_train_discrete, num_states, num_observations, max_steps=20, prec
     
     return hmm
 
-def evaluate_hmm(hmm, X_test_discrete, y_test):
-    """
-    Evaluate HMM model on test data.
-    
-    Parameters:
-    -----------
-    hmm: Trained HMM model
-    X_test_discrete: Discretized test data
-    y_test: Test target values
-    
-    Returns:
-    --------
-    metrics: Dictionary of evaluation metrics
-    """
-    print("\n" + "="*50)
-    print("Evaluating HMM model")
-    print("="*50)
-    
-    # Convert to tensor if not already
-    if not isinstance(X_test_discrete, torch.Tensor):
-        X_test_discrete = torch.tensor(X_test_discrete, dtype=torch.int64, device=device)
-    elif X_test_discrete.device != device:
-        X_test_discrete = X_test_discrete.to(device)
-    
-    # Get most likely state sequence for test data
-    states_seq, state_probs = hmm.viterbi_inference(X_test_discrete)
-    
-    # Move tensors to CPU for further processing
-    states_seq_np = states_seq.cpu().numpy()
-    state_probs_np = state_probs.cpu().numpy()
-    
-    # Calculate correlation between inferred states and target values
-    correlation = np.corrcoef(states_seq_np, y_test)[0, 1]
-    print(f"Correlation between inferred states and target: {correlation:.4f}")
-    
-    return {
-        "correlation": correlation,
-        "states_seq": states_seq_np,
-        "state_probs": state_probs_np
-    }
-
-def plot_results(evaluation, X_test, y_test, feature_idx=0, feature_name="Feature"):
-    """
-    Plot HMM results
-    
-    Parameters:
-    -----------
-    evaluation: Evaluation metrics from evaluate_hmm
-    X_test: Test features
-    y_test: Test target values
-    feature_idx: Index of feature to plot
-    feature_name: Name of feature to plot
-    """
-    plt.figure(figsize=(15, 10))
-    
-    # Plot 1: Inferred states
-    plt.subplot(3, 1, 1)
-    plt.plot(evaluation['states_seq'], label='Inferred States')
-    plt.title('Inferred Hidden States')
-    plt.legend()
-    
-    # Plot 2: Target values
-    plt.subplot(3, 1, 2)
-    plt.plot(y_test, label='Actual Target', color='orange')
-    plt.title('Actual Target Values')
-    plt.legend()
-    
-    # Plot 3: Original feature data
-    plt.subplot(3, 1, 3)
-    feature_data = X_test[:, feature_idx] if len(X_test.shape) > 1 else X_test
-    plt.plot(feature_data, label=feature_name, color='green')
-    plt.title(f'Original Feature: {feature_name}')
-    plt.legend()
-    
-    plt.tight_layout()
-    plt.savefig('hmm_results.png')
-    print("Results plot saved to 'hmm_results.png'")
-    plt.show()
-
 def run_single_epoch_test(X_train_discrete, num_states, num_observations):
-    """
-    Run a single epoch of HMM training to test the implementation
-    
-    Parameters:
-    -----------
-    X_train_discrete: Discretized training data
-    num_states: Number of hidden states for the HMM
-    num_observations: Number of possible observation values
-    
-    Returns:
-    --------
-    hmm: HMM model after one epoch
-    params: Updated parameters
-    """
     print("\n" + "="*50)
     print("RUNNING SINGLE EPOCH TEST")
     print("="*50)
     
-    # Initialize HMM parameters
     T, E, T0 = initialize_hmm_params(num_states, num_observations)
     
-    # Create HMM model on specified device
-    hmm = HiddenMarkovModel(T, E, T0, device=device, epsilon=0.001, maxStep=1)
+    hmm = HiddenMarkovModel(T, E, T0, device='cpu', epsilon=0.001, maxStep=1)
     
-    # Convert to tensor if not already
     if not isinstance(X_train_discrete, torch.Tensor):
-        X_train_discrete = torch.tensor(X_train_discrete, dtype=torch.int64, device=device)
-    elif X_train_discrete.device != device:
-        X_train_discrete = X_train_discrete.to(device)
+        X_train_discrete = torch.tensor(X_train_discrete, dtype=torch.int64)
     
-    # Initialize variables for forward-backward
     hmm.N = len(X_train_discrete)
     shape = [hmm.N, hmm.S]
     hmm.initialize_forw_back_variables(shape)
     
-    # Run a single EM step
     print("Running single epoch (EM step)...")
     start_time = time.time()
     
-    # Get emission probabilities for observation sequence
     obs_prob_seq = hmm.E[X_train_discrete]
     
-    # Run forward-backward algorithm
     hmm.forward_backward(obs_prob_seq)
     
-    # Re-estimate parameters
     new_T0, new_T = hmm.re_estimate_transition(X_train_discrete)
     new_E = hmm.re_estimate_emission(X_train_discrete)
     
-    # Check convergence
     converged = hmm.check_convergence(new_T0, new_T, new_E)
     
-    # Update parameters
     hmm.T0 = new_T0
     hmm.E = new_E
     hmm.T = new_T
@@ -361,79 +141,222 @@ def run_single_epoch_test(X_train_discrete, num_states, num_observations):
     elapsed_time = time.time() - start_time
     print(f"Single epoch completed in {elapsed_time:.2f} seconds")
     
-    # Print parameter updates
     print("\nInitial State Probabilities (T0):")
-    print(hmm.T0.cpu().numpy())
+    print(hmm.T0.numpy())
     
     print("\nTransition Matrix (T) - First few rows:")
-    print(hmm.T[:3].cpu().numpy())
+    print(hmm.T[:3].numpy())
     
     print("\nEmission Matrix (E) - First few rows:")
-    print(hmm.E[:3].cpu().numpy())
+    print(hmm.E[:3].numpy())
     
     return hmm, {'T0': hmm.T0, 'T': hmm.T, 'E': hmm.E}
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train and evaluate HMM model for financial data')
+    parser.add_argument('--mode', type=str, default='classification', 
+                        choices=['classification', 'forecasting'],
+                        help='Evaluation mode: classification or forecasting')
+    parser.add_argument('--states', type=int, default=3, 
+                        help='Number of hidden states in HMM')
+    parser.add_argument('--observations', type=int, default=10,
+                        help='Number of discrete observation bins')
+    parser.add_argument('--feature', type=str, default='sp500 close',
+                        help='Feature to use for training')
+    parser.add_argument('--target', type=str, default='sp500 close',
+                        help='Target to predict')
+    parser.add_argument('--steps', type=int, default=20,
+                        help='Maximum number of Baum-Welch steps')
+    parser.add_argument('--single-epoch', action='store_true',
+                        help='Run only a single epoch test')
+    return parser.parse_args()
+
 def main():
-    """Main function to run the HMM training and evaluation"""
-    # Configuration parameters
-    file_path = "financial_data.csv"
-    features = ["sp500 open", "sp500 high", "sp500 low", "sp500 close", "sp500 volume"]
-    target_column = "sp500 close"
+    args = parse_args()
     
-    num_states = 3             # Number of hidden states in HMM
-    num_observations = 10      # Number of discrete states for observations
-    test_size = 0.2            # Proportion of data for testing
-    normalize = True           # Whether to normalize data
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(base_dir, "financial_data.csv")
+    test_size = 0.2
+    normalize = True
     
-    # Run settings
-    run_full_training = True   # Whether to run full training or just one epoch
-    max_steps = 20             # Maximum number of Baum-Welch iterations
+    print(f"Running in {args.mode} mode with {args.states} states and {args.observations} observation bins")
     
     try:
-        # Load and prepare data
-        data = load_financial_data(file_path, normalize=normalize)
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
         
-        X_train, X_test, y_train, y_test, scaler_params = prepare_data(
-            data, features, target_column, test_size=test_size, normalize=normalize
+        data = load_financial_data(file_path)
+        
+        data_loader = FinancialDataLoader(
+            file_path=None, 
+            target_column=args.target,
+            features=[args.feature], 
+            normalize=normalize,
+            data=data
         )
         
-        # Use the first feature for discretization
-        feature_idx = 0
-        feature_name = features[feature_idx]
+        log_returns_col = data_loader.add_log_returns(args.target)
         
-        # Discretize data for HMM
-        print(f"\nDiscretizing data using feature: {feature_name}")
-        X_train_feature = X_train[:, feature_idx]
-        X_test_feature = X_test[:, feature_idx]
+        label_col = data_loader.add_regime_labels(log_returns_col, threshold=0.0, window=5)
         
-        X_train_discrete = discretize_data(X_train_feature, num_bins=num_observations)
-        X_test_discrete = discretize_data(X_test_feature, num_bins=num_observations)
+        train_loader, test_loader = data_loader.train_test_split(test_size=test_size)
         
-        print(f"Discretized values range: {X_train_discrete.min()} to {X_train_discrete.max()}")
+        X_train = train_loader.data[args.feature].values
+        X_test = test_loader.data[args.feature].values
+        y_train = train_loader.data[log_returns_col].values
+        y_test = test_loader.data[log_returns_col].values
+        train_labels = train_loader.data[label_col].values
+        test_labels = test_loader.data[label_col].values
         
-        if run_full_training:
-            # Train HMM
-            hmm = train_hmm(X_train_discrete, num_states, num_observations, max_steps=max_steps)
+        X_train_discrete = discretize_data(y_train, num_bins=args.observations, strategy='equal_freq')
+        X_test_discrete = discretize_data(y_test, num_bins=args.observations, strategy='equal_freq')
+        
+        if args.mode == 'forecasting':
+            unique_bins = np.unique(X_train_discrete)
+            bin_values = {}
             
-            # Evaluate HMM
-            evaluation = evaluate_hmm(hmm, X_test_discrete, y_test)
+            for bin_idx in unique_bins:
+                bin_mask = (X_train_discrete == bin_idx)
+                bin_values[bin_idx] = np.mean(y_train[bin_mask])
+            
+            obs_map = np.array([bin_values.get(i, 0) for i in range(args.observations)])
+            print(f"Created observation map: {obs_map}")
         else:
-            # Run single epoch test
-            hmm, params = run_single_epoch_test(X_train_discrete, num_states, num_observations)
+            obs_map = None
+        
+        if args.single_epoch:
+            hmm, params = run_single_epoch_test(X_train_discrete, args.states, args.observations)
+        else:
+            T, E, T0 = initialize_hmm_params(args.states, args.observations)
+            hmm = HiddenMarkovModel(T, E, T0, device='cpu', maxStep=args.steps)
             
-            # Evaluate HMM after single epoch
-            evaluation = evaluate_hmm(hmm, X_test_discrete, y_test)
+            T0, T, E, converged = hmm.Baum_Welch_EM(X_train_discrete)
         
-        # Plot results
-        plot_results(evaluation, X_test, y_test, feature_idx=feature_idx, feature_name=feature_name)
+        print(f"\nEvaluating HMM in {args.mode} mode...")
+        eval_metrics = hmm.evaluate(
+            X_test_discrete, 
+            mode=args.mode,
+            actual_values=y_test,
+            actual_labels=test_labels,
+            observation_map=obs_map
+        )
         
-        # Print GPU memory stats if using CUDA
-        if torch.cuda.is_available():
-            print(f"\nGPU Memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-            print(f"GPU Memory cached: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
-            torch.cuda.empty_cache()
+        print("\n" + "="*50)
+        print("HMM MODEL EVALUATION REPORT")
+        print("="*50)
         
-        print("\nTraining and evaluation complete!")
+        if args.mode == 'classification':
+            print(f"Classification Metrics:")
+            print(f"  Accuracy:  {eval_metrics['accuracy']:.4f}")
+            print(f"  Precision: {eval_metrics['precision']:.4f}")
+            print(f"  Recall:    {eval_metrics['recall']:.4f}")
+            print(f"  F1 Score:  {eval_metrics['f1_score']:.4f}")
+            
+            print("\nConfusion Matrix:")
+            print(eval_metrics['confusion_matrix'])
+            
+            print("\nState Interpretations:")
+            for state, interp in eval_metrics['state_interpretations'].items():
+                print(f"  State {state}: {interp['type']}")
+                print(f"    Bull Ratio: {interp['bull_ratio']:.2f}")
+                print(f"    Mean Return: {interp['mean']:.6f}")
+                print(f"    Std Deviation: {interp['std']:.6f}")
+        
+        else:
+            print(f"Forecasting Metrics:")
+            print(f"  MSE:         {eval_metrics['mse']:.6f}")
+            print(f"  MAE:         {eval_metrics['mae']:.6f}")
+            print(f"  Correlation: {eval_metrics['correlation']:.4f}")
+        
+        plt.figure(figsize=(15, 12))
+        
+        if args.mode == 'classification':
+            plt.subplot(3, 1, 1)
+            plt.plot(X_test, label=args.feature, color='blue')
+            plt.title(f'{args.feature} with Inferred Market Regimes')
+            
+            states = eval_metrics['states_seq']
+            unique_states = np.unique(states)
+            colors = ['red', 'green', 'yellow', 'orange', 'purple']
+            
+            for i, state in enumerate(unique_states):
+                state_interp = eval_metrics['state_interpretations'][state]
+                state_type = state_interp['type']
+                mask = (states == state)
+                plt.fill_between(range(len(X_test)), np.min(X_test), np.max(X_test), 
+                                 where=mask, alpha=0.3, color=colors[i % len(colors)],
+                                 label=f"State {state}: {state_type}")
+            plt.legend(loc='upper left')
+            
+            plt.subplot(3, 1, 2)
+            plt.plot(y_test, label='Log Returns', color='blue')
+            plt.scatter(range(len(y_test)), y_test, c=eval_metrics['predicted_labels'], 
+                        cmap='coolwarm', alpha=0.6, label='Predicted Labels')
+            plt.title('Log Returns with Bull/Bear Classifications')
+            plt.axhline(y=0, color='black', linestyle='--')
+            plt.legend()
+            
+            plt.subplot(3, 1, 3)
+            cm = eval_metrics['confusion_matrix']
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Bear', 'Bull'])
+            disp.plot(ax=plt.gca(), cmap='Blues', values_format='.0f')
+            plt.title('Confusion Matrix (Bear vs Bull Classification)')
+            
+        else:
+            plt.subplot(3, 1, 1)
+            plt.plot(eval_metrics['actual_next_values'], label='Actual Returns', color='blue')
+            plt.plot(eval_metrics['forecasts'], label='Predicted Returns', color='red')
+            plt.title('One-Step-Ahead Return Forecasts')
+            plt.axhline(y=0, color='black', linestyle='--')
+            plt.legend()
+            
+            plt.subplot(3, 1, 2)
+            plt.scatter(eval_metrics['actual_next_values'], eval_metrics['forecasts'], alpha=0.5)
+            plt.axhline(y=0, color='black', linestyle='--')
+            plt.axvline(x=0, color='black', linestyle='--')
+            plt.title(f'Actual vs Predicted Returns (Correlation: {eval_metrics["correlation"]:.4f})')
+            plt.xlabel('Actual Returns')
+            plt.ylabel('Predicted Returns')
+            
+            plt.subplot(3, 1, 3)
+            plt.plot(X_test, label=args.feature, color='blue')
+            plt.title(f'{args.feature} with Inferred Market Regimes')
+            
+            states = eval_metrics['states_seq']
+            unique_states = np.unique(states)
+            colors = ['red', 'green', 'yellow', 'orange', 'purple']
+            
+            for i, state in enumerate(unique_states):
+                mask = (states == state)
+                plt.fill_between(range(len(X_test)), np.min(X_test), np.max(X_test), 
+                                 where=mask, alpha=0.3, color=colors[i % len(colors)],
+                                 label=f"State {state}")
+            plt.legend(loc='upper left')
+        
+        plt.tight_layout()
+        output_file = f'hmm_{args.mode}_results.png'
+        plt.savefig(output_file)
+        print(f"\nResults plot saved to '{output_file}'")
+        
+        model_file = f'hmm_{args.mode}_model.pt'
+        hmm.save_model(model_file)
+        print(f"Model saved to '{model_file}'")
+
+        # Now load the model back from disk to inspect parameters
+        print("\nLoading the model back from disk to inspect parameters...")
+        loaded_hmm = HiddenMarkovModel.load_model(model_file)
+
+        print("\n=== HMM Model Parameters ===")
+        print("Initial State Probabilities (T0):")
+        print(loaded_hmm.T0)
+
+        print("\nTransition Matrix (T):")
+        print(loaded_hmm.T)
+
+        print("\nEmission Matrix (E):")
+        print(loaded_hmm.E)
+        print("============================")
+
         
     except Exception as e:
         print(f"Error occurred: {str(e)}")
