@@ -1,4 +1,4 @@
-# source .venv/bin/activate && python train.py --mode classification --states 6 --observations 40 --discr_strategy kmeans --direct_states --feature "sp500 high-low" --target "sp500 close" --steps 40 --final_test
+# source .venv/bin/activate && python train.py --mode classification --states 6 --observations 40 --discr_strategy kmeans --direct_states --feature "sp500 close" --target "sp500 close" --steps 30 --use_validation
 import torch
 import numpy as np
 import pandas as pd
