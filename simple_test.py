@@ -4,11 +4,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import time
-import argparse
-import json
 from tqdm import tqdm
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-from sklearn.model_selection import ParameterGrid
 
 from data_processor import FinancialDataLoader, discretize_data
 from hmm_model import HiddenMarkovModel
@@ -20,24 +17,8 @@ device = 'cpu'
 print(f"Using device: {device}")
 
 
-def run_hyperparameter_test(
-    data_file='financial_data.csv',
-    feature='sp500 high-low',
-    target='sp500 close',
-    mode='classification',
-    states=3,
-    observations=15,
-    steps=20,
-    discr_strategy='equal_freq',
-    class_threshold=0.5,
-    use_feature_for_hmm=False,
-    direct_states=False,
-    test_size=0.2,
-    val_size=0.2,
-    use_validation=True,
-    final_test=False
-):
-    """Run a single hyperparameter test with the given parameters"""
+def run_test(states, observations, discr_strategy, direct_states, feature, steps=30):
+    """Run a single test with the given parameters"""
 
     print("\n" + "="*70)
     print(
@@ -46,15 +27,13 @@ def run_hyperparameter_test(
         f"          steps={steps}, direct_states={direct_states}, feature={feature}")
     print("="*70)
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, data_file)
+    # Load data
+    data_file = 'financial_data.csv'
+    target = 'sp500 close'
     normalize = True
 
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"File not found: {file_path}")
-
     data_loader = FinancialDataLoader(
-        file_path=file_path,
+        file_path=data_file,
         target_column=target,
         features=[feature],
         normalize=normalize
@@ -64,7 +43,10 @@ def run_hyperparameter_test(
     label_col = data_loader.add_regime_labels(
         log_returns_col, threshold=0.0, window=5)
 
-    # Implement train/validation/test split
+    # Split data into train/val/test
+    test_size = 0.2
+    val_size = 0.2
+
     total_samples = len(data_loader.data)
     test_size_actual = int(total_samples * test_size)
     train_val_size = total_samples - test_size_actual
@@ -75,159 +57,137 @@ def run_hyperparameter_test(
 
     # Create test dataset
     test_data = data_loader.data.iloc[test_indices].copy()
-    test_loader = FinancialDataLoader(
+
+    # Split train and validation
+    val_size_actual = int(train_val_size * val_size)
+    train_size = train_val_size - val_size_actual
+
+    train_indices = train_val_indices[:train_size]
+    val_indices = train_val_indices[train_size:]
+
+    # Create datasets
+    train_data = data_loader.data.iloc[train_indices].copy()
+    val_data = data_loader.data.iloc[val_indices].copy()
+
+    train_loader = FinancialDataLoader(
         file_path=None, target_column=target, features=[feature],
-        normalize=normalize, data=test_data, device=device
+        normalize=normalize, data=train_data, device=device
     )
 
-    if final_test:
-        # Use all non-test data for training
-        train_data = data_loader.data.iloc[train_val_indices].copy()
-        train_loader = FinancialDataLoader(
-            file_path=None, target_column=target, features=[feature],
-            normalize=normalize, data=train_data, device=device
-        )
+    val_loader = FinancialDataLoader(
+        file_path=None, target_column=target, features=[feature],
+        normalize=normalize, data=val_data, device=device
+    )
 
-        # Use test data for evaluation
-        X_train = train_loader.data[feature].values
-        X_eval = test_loader.data[feature].values
-        y_train = train_loader.data[log_returns_col].values
-        y_eval = test_loader.data[log_returns_col].values
-        train_labels = train_loader.data[label_col].values
-        eval_labels = test_loader.data[label_col].values
-    else:
-        # Split train/val from the train_val set
-        val_size_actual = int(train_val_size * val_size)
-        train_size = train_val_size - val_size_actual
+    # Use validation set for evaluation
+    X_train = train_loader.data[feature].values
+    X_eval = val_loader.data[feature].values
+    y_train = train_loader.data[log_returns_col].values
+    y_eval = val_loader.data[log_returns_col].values
+    train_labels = train_loader.data[label_col].values
+    eval_labels = val_loader.data[label_col].values
 
-        train_indices = train_val_indices[:train_size]
-        val_indices = train_val_indices[train_size:]
+    # Use log returns for HMM training
+    hmm_train_data = y_train
+    hmm_eval_data = y_eval
 
-        # Create datasets
-        train_data = data_loader.data.iloc[train_indices].copy()
-        val_data = data_loader.data.iloc[val_indices].copy()
-
-        train_loader = FinancialDataLoader(
-            file_path=None, target_column=target, features=[feature],
-            normalize=normalize, data=train_data, device=device
-        )
-
-        val_loader = FinancialDataLoader(
-            file_path=None, target_column=target, features=[feature],
-            normalize=normalize, data=val_data, device=device
-        )
-
-        # Use validation set for evaluation
-        X_train = train_loader.data[feature].values
-        X_eval = val_loader.data[feature].values
-        y_train = train_loader.data[log_returns_col].values
-        y_eval = val_loader.data[log_returns_col].values
-        train_labels = train_loader.data[label_col].values
-        eval_labels = val_loader.data[label_col].values
-
-    # Data for HMM
-    if use_feature_for_hmm:
-        hmm_train_data = X_train
-        hmm_eval_data = X_eval
-    else:
-        hmm_train_data = y_train
-        hmm_eval_data = y_eval
-
+    # Discretize data
     X_train_discrete = discretize_data(
         hmm_train_data, num_bins=observations, strategy=discr_strategy)
     X_eval_discrete = discretize_data(
         hmm_eval_data, num_bins=observations, strategy=discr_strategy)
 
-    # Train the HMM model
-    T, E, T0 = initialize_hmm_params(states, observations)
+    # Train HMM
+    T = np.ones((states, states)) / states
+    T = T + np.random.uniform(0, 0.1, T.shape)
+    T = T / T.sum(axis=1, keepdims=True)
+
+    E = np.ones((observations, states)) / states
+    E = E + np.random.uniform(0, 0.1, E.shape)
+    E = E / E.sum(axis=1, keepdims=True)
+
+    T0 = np.ones(states) / states
+
     hmm = HiddenMarkovModel(T, E, T0, device='cpu', maxStep=steps)
 
     start_time = time.time()
     T0, T, E, converged = hmm.Baum_Welch_EM(X_train_discrete)
     training_time = time.time() - start_time
 
-    # Evaluate the model
+    # Evaluate
     eval_metrics = hmm.evaluate(
         X_eval_discrete,
-        mode=mode,
+        mode='classification',
         actual_values=hmm_eval_data,
         actual_labels=eval_labels,
         observation_map=None,
-        class_threshold=class_threshold,
+        class_threshold=0.5,
         direct_states=direct_states
     )
 
-    # Add test parameters to the metrics
-    eval_metrics.update({
+    # Extract key metrics
+    accuracy = eval_metrics.get('accuracy', 0)
+    precision = eval_metrics.get('precision', 0)
+    recall = eval_metrics.get('recall', 0)
+    f1_score = eval_metrics.get('f1_score', 0)
+    confusion_mat = eval_metrics.get('confusion_matrix', np.zeros((2, 2)))
+
+    # Print metrics
+    print(f"\nResults:")
+    print(f"  Accuracy:  {accuracy:.4f}")
+    print(f"  Precision: {precision:.4f}")
+    print(f"  Recall:    {recall:.4f}")
+    print(f"  F1 Score:  {f1_score:.4f}")
+
+    print("\nConfusion Matrix:")
+    print(confusion_mat)
+
+    return {
         'states': states,
         'observations': observations,
-        'steps': steps,
         'discr_strategy': discr_strategy,
         'direct_states': direct_states,
         'feature': feature,
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1_score,
+        'confusion_matrix': confusion_mat.tolist(),
         'training_time': training_time,
         'converged': converged
-    })
-
-    # Remove large arrays that we don't need for the report
-    if 'states_seq' in eval_metrics:
-        del eval_metrics['states_seq']
-    if 'predicted_labels' in eval_metrics:
-        del eval_metrics['predicted_labels']
-
-    return eval_metrics
-
-
-def initialize_hmm_params(num_states, num_observations):
-    """Initialize HMM parameters (copied from train.py)"""
-    T = np.ones((num_states, num_states)) / num_states
-    T = T + np.random.uniform(0, 0.1, T.shape)
-    T = T / T.sum(axis=1, keepdims=True)
-
-    E = np.ones((num_observations, num_states)) / num_states
-    E = E + np.random.uniform(0, 0.1, E.shape)
-    E = E / E.sum(axis=1, keepdims=True)
-
-    T0 = np.ones(num_states) / num_states
-
-    return T, E, T0
-
-
-def run_hyperparameter_grid_search():
-    """Run a grid search over hyperparameters"""
-
-    # Define the hyperparameter grid
-    param_grid = {
-        'states': [2, 3, 4, 5, 6, 8],
-        'observations': [10, 20, 30, 40],
-        'discr_strategy': ['equal_freq', 'equal_width', 'kmeans'],
-        'direct_states': [True, False],
-        'feature': ['sp500 high-low', 'sp500 close'],
-        'steps': [30]  # Keep fixed to save time
     }
 
-    # Calculate total combinations
-    grid = list(ParameterGrid(param_grid))
-    print(f"Running grid search with {len(grid)} parameter combinations")
 
-    # Since we need to run at least 12 tests, let's select a subset of meaningful combinations
-    selected_params = [
+def run_all_tests():
+    # Define tests to run
+    tests = [
+        # Test 1: baseline with small model
         {'states': 2, 'observations': 10, 'discr_strategy': 'equal_freq',
             'direct_states': True, 'feature': 'sp500 high-low'},
+
+        # Test 2: change discretization strategy
         {'states': 2, 'observations': 10, 'discr_strategy': 'kmeans',
             'direct_states': True, 'feature': 'sp500 high-low'},
+
+        # Test 3-4: increase states
         {'states': 3, 'observations': 20, 'discr_strategy': 'equal_freq',
             'direct_states': True, 'feature': 'sp500 high-low'},
         {'states': 3, 'observations': 20, 'discr_strategy': 'kmeans',
             'direct_states': True, 'feature': 'sp500 high-low'},
+
+        # Test 5-6: larger model
         {'states': 4, 'observations': 30, 'discr_strategy': 'equal_freq',
             'direct_states': True, 'feature': 'sp500 high-low'},
         {'states': 4, 'observations': 30, 'discr_strategy': 'kmeans',
             'direct_states': True, 'feature': 'sp500 high-low'},
+
+        # Test 7-8: even larger model
         {'states': 5, 'observations': 40, 'discr_strategy': 'equal_freq',
             'direct_states': True, 'feature': 'sp500 high-low'},
         {'states': 5, 'observations': 40, 'discr_strategy': 'kmeans',
             'direct_states': True, 'feature': 'sp500 high-low'},
+
+        # Test 9-12: large model with different parameters
         {'states': 6, 'observations': 30, 'discr_strategy': 'equal_freq',
             'direct_states': True, 'feature': 'sp500 high-low'},
         {'states': 6, 'observations': 30, 'discr_strategy': 'kmeans',
@@ -236,78 +196,41 @@ def run_hyperparameter_grid_search():
             'direct_states': True, 'feature': 'sp500 high-low'},
         {'states': 6, 'observations': 40, 'discr_strategy': 'kmeans',
             'direct_states': True, 'feature': 'sp500 high-low'},
+
+        # Test 13: different feature
         {'states': 6, 'observations': 40, 'discr_strategy': 'kmeans',
             'direct_states': True, 'feature': 'sp500 close'},
+
+        # Test 14-15: very large model
         {'states': 8, 'observations': 40, 'discr_strategy': 'kmeans',
             'direct_states': True, 'feature': 'sp500 high-low'},
         {'states': 8, 'observations': 40, 'discr_strategy': 'kmeans',
-            'direct_states': False, 'feature': 'sp500 high-low'}
+            'direct_states': False, 'feature': 'sp500 high-low'},
     ]
 
     results = []
 
-    for params in tqdm(selected_params):
+    for i, params in enumerate(tests):
+        print(f"\nRunning test {i+1}/{len(tests)}")
         try:
-            print(f"Running test with parameters: {params}")
-
-            result = run_hyperparameter_test(
+            result = run_test(
                 states=params['states'],
                 observations=params['observations'],
                 discr_strategy=params['discr_strategy'],
                 direct_states=params['direct_states'],
-                feature=params['feature'],
-                steps=30  # Fixed steps for all tests
+                feature=params['feature']
             )
-
-            # Make result JSON serializable - convert numpy arrays to lists
-            result_serializable = {}
-            for key, value in result.items():
-                if key == 'confusion_matrix' and isinstance(value, np.ndarray):
-                    result_serializable[key] = value.tolist()
-                elif isinstance(value, np.ndarray):
-                    result_serializable[key] = value.tolist()
-                elif isinstance(value, np.int64):
-                    result_serializable[key] = int(value)
-                elif isinstance(value, np.float64):
-                    result_serializable[key] = float(value)
-                elif isinstance(value, dict):
-                    # Handle nested dictionaries
-                    nested_dict = {}
-                    for k, v in value.items():
-                        if isinstance(v, dict):
-                            nested_inner = {}
-                            for ki, vi in v.items():
-                                if isinstance(vi, (np.ndarray, np.int64, np.float64)):
-                                    nested_inner[ki] = vi.item() if hasattr(
-                                        vi, 'item') else vi.tolist()
-                                else:
-                                    nested_inner[ki] = vi
-                            nested_dict[k] = nested_inner
-                        else:
-                            nested_dict[k] = v
-                    result_serializable[key] = nested_dict
-                else:
-                    result_serializable[key] = value
-
-            # Add the result to our list
-            results.append(result_serializable)
-
-            # Save progress after each test
-            with open('hyperparameter_results.json', 'w') as f:
-                json.dump(results, f, indent=2)
-
+            results.append(result)
         except Exception as e:
-            print(f"Error with parameters {params}: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            print(f"Error with test {i+1}: {str(e)}")
 
     return results
 
 
 def generate_report(results):
-    """Generate a comprehensive report from the test results"""
+    """Generate a report from test results"""
 
-    # Convert results to DataFrame for easier analysis
+    # Convert to DataFrame for easier analysis
     df = pd.DataFrame(results)
 
     # Create the report markdown
@@ -315,15 +238,18 @@ def generate_report(results):
 
     # Add overview
     report += "## Overview\n\n"
-    report += f"This report presents the results of hyperparameter optimization for an HMM (Hidden Markov Model) used for financial market regime classification. "
+    report += f"This report presents the results of hyperparameter optimization for a Hidden Markov Model (HMM) used for financial market regime classification. "
     report += f"We tested {len(results)} different hyperparameter combinations to find the optimal configuration. "
     report += f"The main metrics evaluated were accuracy, precision, recall, and F1-score.\n\n"
 
     # Add best results by different metrics
     report += "## Best Results\n\n"
 
-    best_accuracy = df.loc[df['accuracy'].idxmax()]
-    best_f1 = df.loc[df['f1_score'].idxmax()]
+    best_accuracy_idx = df['accuracy'].idxmax()
+    best_f1_idx = df['f1_score'].idxmax()
+
+    best_accuracy = df.iloc[best_accuracy_idx]
+    best_f1 = df.iloc[best_f1_idx]
 
     report += "### Best by Accuracy\n\n"
     report += f"- **Accuracy**: {best_accuracy['accuracy']:.4f}\n"
@@ -463,8 +389,8 @@ def generate_report(results):
         report += "```\n"
         report += f"                 Predicted\n"
         report += f"                 Bear    Bull\n"
-        report += f"Actual Bear      {cm[0,0]:<7} {cm[0,1]:<7}\n"
-        report += f"       Bull      {cm[1,0]:<7} {cm[1,1]:<7}\n"
+        report += f"Actual Bear      {cm[0][0]:<7} {cm[0][1]:<7}\n"
+        report += f"       Bull      {cm[1][0]:<7} {cm[1][1]:<7}\n"
         report += "```\n\n"
 
     # Recommendations
@@ -487,15 +413,21 @@ def generate_report(results):
     # Trends and insights
     report += "### Key Insights\n\n"
 
+    # Calculate trend correlations
+    states_corr = np.corrcoef(
+        states_analysis['states'], states_analysis[('accuracy', 'mean')])[0, 1]
+    obs_corr = np.corrcoef(
+        obs_analysis['observations'], obs_analysis[('accuracy', 'mean')])[0, 1]
+
     # Analyze trends in the data
     report += "1. **Number of States**: "
-    if states_analysis[('accuracy', 'mean')].corr(states_analysis['states']) > 0:
+    if states_corr > 0:
         report += "Higher number of states tends to improve performance, suggesting the model benefits from capturing more market regimes.\n"
     else:
         report += "Having more states doesn't necessarily improve performance, suggesting simpler models can capture the essential market dynamics.\n"
 
     report += "2. **Number of Observations**: "
-    if obs_analysis[('accuracy', 'mean')].corr(obs_analysis['observations']) > 0:
+    if obs_corr > 0:
         report += "Increasing the number of observations generally improves model performance, allowing for finer-grained discretization of the input data.\n"
     else:
         report += "More observations doesn't necessarily lead to better performance, suggesting a balance between granularity and generalization.\n"
@@ -529,14 +461,16 @@ def generate_report(results):
 
 
 if __name__ == "__main__":
-    print("Running HMM hyperparameter optimization...")
+    print("Running HMM hyperparameter tests...")
 
-    # Run the grid search
-    results = run_hyperparameter_grid_search()
+    # Run all tests
+    results = run_all_tests()
 
-    # Generate and save the report
+    # Generate report
     report = generate_report(results)
+
+    # Save report
     with open('report.md', 'w') as f:
         f.write(report)
 
-    print("Optimization complete. Report saved to 'report.md'")
+    print("Tests completed. Report saved to 'report.md'")
