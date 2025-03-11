@@ -78,7 +78,7 @@ def initialize_hmm_params(num_states, num_observations):
     T = T + np.random.uniform(0, 0.1, T.shape)
     T = T / T.sum(axis=1, keepdims=True)
 
-    E = np.ones((num_observations, num_states)) / num_states
+    E = np.ones((num_states, num_observations)) / num_observations
     E = E + np.random.uniform(0, 0.1, E.shape)
     E = E / E.sum(axis=1, keepdims=True)
 

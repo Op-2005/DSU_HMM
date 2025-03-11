@@ -15,7 +15,7 @@ This report presents the results of an optimized Hidden Markov Model (HMM) for f
 - **Feature Used**: sp500 high-low
 - **Classification Threshold**: 0.45 (adjusted from 0.5)
 - **Training Steps**: 40
-- **Training Time**: 60.01 seconds
+- **Training Time**: 44.47 seconds
 - **Converged**: False
 
 ## Structured Emission Matrix Approach
