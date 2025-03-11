@@ -1526,6 +1526,6 @@
   "direct_states": true,
   "feature": "sp500 high-low",
   "class_threshold": 0.4,
-  "training_time": 80.69133496284485,
+  "training_time": 85.50917029380798,
   "converged": false
 }
