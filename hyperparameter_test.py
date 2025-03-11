@@ -1,3 +1,7 @@
+
+# run file: source .venv/bin/activate && python hyperparameter_test.py
+
+
 import torch
 import numpy as np
 import pandas as pd
@@ -681,21 +685,7 @@ def run_optimized_test():
             print(f"Training HMM with {params['states']} states and {params['observations']} observations")
             print(f"Starting Baum-Welch EM with {params['steps']} max steps")
             
-            # Track log-likelihood values during training
-            log_likelihoods = []
-            
-            # Modify the Baum-Welch function to return log-likelihood at each step
-            T0, T, E, converged, step_log_likelihoods = hmm.Baum_Welch_EM(
-                X_train_discrete, 
-                return_log_likelihood=True
-            )
-            
-            # Save log-likelihoods to file
-            with open('training_log_likelihoods.json', 'w') as f:
-                json.dump({
-                    'log_likelihoods': step_log_likelihoods,
-                    'steps': list(range(1, len(step_log_likelihoods) + 1))
-                }, f)
+            T0, T, E, converged = hmm.Baum_Welch_EM(X_train_discrete)
             
             print(f"HMM training {'converged' if converged else 'did not converge'}")
             print(f"Final emission matrix shape: {E.shape}")
