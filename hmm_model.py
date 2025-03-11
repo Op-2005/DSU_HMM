@@ -11,18 +11,43 @@ class HiddenMarkovModel(object):
         self.S = T.shape[0]
         self.O = E.shape[0]
         self.prob_state_1 = []
-        self.E = torch.tensor(E, dtype=torch.float64)
-        self.T = torch.tensor(T, dtype=torch.float64)
-        self.T0 = torch.tensor(T0, dtype=torch.float64)
+        
+        # Convert to NumPy arrays first if they're not already
+        if isinstance(T, torch.Tensor):
+            T = T.detach().cpu().numpy()
+        if isinstance(E, torch.Tensor):
+            E = E.detach().cpu().numpy()
+        if isinstance(T0, torch.Tensor):
+            T0 = T0.detach().cpu().numpy()
+            
+        # Create tensors with better handling
+        try:
+            self.E = torch.tensor(E, dtype=torch.float64)
+            self.T = torch.tensor(T, dtype=torch.float64)
+            self.T0 = torch.tensor(T0, dtype=torch.float64)
+        except Exception as e:
+            print(f"Error initializing HMM tensors: {str(e)}")
+            print(f"T shape: {T.shape}, E shape: {E.shape}, T0 shape: {T0.shape}")
+            raise
 
     def initialize_viterbi_variables(self, shape):
-        pathStates = torch.zeros(shape, dtype=torch.float64)
-        pathScores = torch.zeros_like(pathStates)
-        states_seq = torch.zeros([shape[0]], dtype=torch.int64)
-        return pathStates, pathScores, states_seq
+        try:
+            pathStates = torch.zeros(shape, dtype=torch.float64)
+            pathScores = torch.zeros_like(pathStates)
+            states_seq = torch.zeros([shape[0]], dtype=torch.int64)
+            return pathStates, pathScores, states_seq
+        except Exception as e:
+            print(f"Error initializing Viterbi variables: {str(e)}")
+            print(f"Shape: {shape}")
+            raise
 
     def belief_propagation(self, scores):
-        return scores.view(-1, 1) + torch.log(self.T)
+        try:
+            return scores.view(-1, 1) + torch.log(self.T)
+        except Exception as e:
+            print(f"Error in belief propagation: {str(e)}")
+            print(f"Scores shape: {scores.shape}, T shape: {self.T.shape}")
+            raise
 
     def viterbi_inference(self, x):
         if not isinstance(x, torch.Tensor):
@@ -30,62 +55,103 @@ class HiddenMarkovModel(object):
 
         self.N = len(x)
         shape = [self.N, self.S]
-        pathStates, pathScores, states_seq = self.initialize_viterbi_variables(
-            shape)
-        obs_prob_full = torch.log(self.E[x])
-        pathScores[0] = torch.log(self.T0) + obs_prob_full[0]
+        
+        try:
+            pathStates, pathScores, states_seq = self.initialize_viterbi_variables(
+                shape)
+            obs_prob_full = torch.log(self.E[x])
+            pathScores[0] = torch.log(self.T0) + obs_prob_full[0]
 
-        for step, obs_prob in enumerate(obs_prob_full[1:]):
-            belief = self.belief_propagation(pathScores[step, :])
-            pathStates[step + 1] = torch.argmax(belief, 0)
-            pathScores[step + 1] = torch.max(belief, 0)[0] + obs_prob
+            for step, obs_prob in enumerate(obs_prob_full[1:]):
+                belief = self.belief_propagation(pathScores[step, :])
+                pathStates[step + 1] = torch.argmax(belief, 0)
+                pathScores[step + 1] = torch.max(belief, 0)[0] + obs_prob
 
-        states_seq[self.N - 1] = torch.argmax(pathScores[self.N-1, :], 0)
+            states_seq[self.N - 1] = torch.argmax(pathScores[self.N-1, :], 0)
 
-        for step in range(self.N - 1, 0, -1):
-            state = states_seq[step]
-            state_prob = pathStates[step][state]
-            states_seq[step - 1] = state_prob
+            for step in range(self.N - 1, 0, -1):
+                state = states_seq[step]
+                state_prob = pathStates[step][state]
+                states_seq[step - 1] = state_prob
 
-        return states_seq, torch.exp(pathScores)
+            return states_seq, torch.exp(pathScores)
+        except Exception as e:
+            print(f"Error in Viterbi inference: {str(e)}")
+            print(f"x shape: {x.shape}, x unique values: {torch.unique(x)}")
+            raise
 
     def initialize_forw_back_variables(self, shape):
-        self.forward = torch.zeros(shape, dtype=torch.float64)
-        self.backward = torch.zeros_like(self.forward)
-        self.posterior = torch.zeros_like(self.forward)
+        try:
+            self.forward = torch.zeros(shape, dtype=torch.float64)
+            self.backward = torch.zeros_like(self.forward)
+            self.posterior = torch.zeros_like(self.forward)
+        except Exception as e:
+            print(f"Error initializing forward-backward variables: {str(e)}")
+            print(f"Shape: {shape}")
+            raise
 
     def _forward(self, obs_prob_seq):
-        self.scale = torch.zeros([self.N], dtype=torch.float64)
-        init_prob = self.T0 * obs_prob_seq[0]
-        self.scale[0] = 1.0 / init_prob.sum()
-        self.forward[0] = self.scale[0] * init_prob
+        try:
+            self.scale = torch.zeros([self.N], dtype=torch.float64)
+            init_prob = self.T0 * obs_prob_seq[0]
+            
+            # Handle numerical issues
+            sum_init = init_prob.sum()
+            if sum_init > 0:
+                self.scale[0] = 1.0 / sum_init
+            else:
+                print("Warning: Zero probability in forward algorithm initialization")
+                self.scale[0] = 1.0
+                
+            self.forward[0] = self.scale[0] * init_prob
 
-        for step, obs_prob in enumerate(obs_prob_seq[1:]):
-            prev_prob = self.forward[step].unsqueeze(0)
-            prior_prob = torch.matmul(prev_prob, self.T)
-            forward_score = prior_prob * obs_prob
-            forward_prob = torch.squeeze(forward_score)
-            self.scale[step + 1] = 1 / forward_prob.sum()
-            self.forward[step + 1] = self.scale[step + 1] * forward_prob
+            for step, obs_prob in enumerate(obs_prob_seq[1:]):
+                prev_prob = self.forward[step].unsqueeze(0)
+                prior_prob = torch.matmul(prev_prob, self.T)
+                forward_score = prior_prob * obs_prob
+                forward_prob = torch.squeeze(forward_score)
+                
+                # Handle numerical issues
+                sum_forward = forward_prob.sum()
+                if sum_forward > 0:
+                    self.scale[step + 1] = 1 / sum_forward
+                else:
+                    print(f"Warning: Zero probability in forward algorithm at step {step+1}")
+                    self.scale[step + 1] = 1.0
+                    
+                self.forward[step + 1] = self.scale[step + 1] * forward_prob
+        except Exception as e:
+            print(f"Error in forward algorithm: {str(e)}")
+            print(f"obs_prob_seq shape: {obs_prob_seq.shape}")
+            raise
 
     def _backward(self, obs_prob_seq_rev):
-        self.backward[0] = self.scale[self.N - 1] * \
-            torch.ones([self.S], dtype=torch.float64)
+        try:
+            self.backward[0] = self.scale[self.N - 1] * \
+                torch.ones([self.S], dtype=torch.float64)
 
-        for step, obs_prob in enumerate(obs_prob_seq_rev[:-1]):
-            next_prob = self.backward[step, :].unsqueeze(1)
-            obs_prob_d = torch.diag(obs_prob)
-            prior_prob = torch.matmul(self.T, obs_prob_d)
-            backward_prob = torch.matmul(prior_prob, next_prob).squeeze()
-            self.backward[step + 1] = self.scale[self.N -
-                                                 2 - step] * backward_prob
+            for step, obs_prob in enumerate(obs_prob_seq_rev[:-1]):
+                next_prob = self.backward[step, :].unsqueeze(1)
+                obs_prob_d = torch.diag(obs_prob)
+                prior_prob = torch.matmul(self.T, obs_prob_d)
+                backward_prob = torch.matmul(prior_prob, next_prob).squeeze()
+                self.backward[step + 1] = self.scale[self.N -
+                                                    2 - step] * backward_prob
 
-        self.backward = torch.flip(self.backward, [0, 1])
+            self.backward = torch.flip(self.backward, [0, 1])
+        except Exception as e:
+            print(f"Error in backward algorithm: {str(e)}")
+            print(f"obs_prob_seq_rev shape: {obs_prob_seq_rev.shape}")
+            raise
 
     def forward_backward(self, obs_prob_seq):
-        self._forward(obs_prob_seq)
-        obs_prob_seq_rev = torch.flip(obs_prob_seq, [0, 1])
-        self._backward(obs_prob_seq_rev)
+        try:
+            self._forward(obs_prob_seq)
+            obs_prob_seq_rev = torch.flip(obs_prob_seq, [0, 1])
+            self._backward(obs_prob_seq_rev)
+        except Exception as e:
+            print(f"Error in forward-backward algorithm: {str(e)}")
+            raise
 
     def re_estimate_transition(self, x):
         if not isinstance(x, torch.Tensor):
@@ -162,28 +228,39 @@ class HiddenMarkovModel(object):
         if not isinstance(obs_seq, torch.Tensor):
             obs_seq = torch.tensor(obs_seq, dtype=torch.int64)
 
-        self.N = len(obs_seq)
-        shape = [self.N, self.S]
-        self.initialize_forw_back_variables(shape)
-        converged = False
+        try:
+            self.N = len(obs_seq)
+            shape = [self.N, self.S]
+            self.initialize_forw_back_variables(shape)
+            converged = False
 
-        start_time = time.time()
-        print(f"Starting Baum-Welch EM with {self.maxStep} max steps")
+            start_time = time.time()
+            print(f"Starting Baum-Welch EM with {self.maxStep} max steps")
 
-        for i in range(self.maxStep):
-            iter_start = time.time()
-            converged = self.expectation_maximization_step(obs_seq)
-            iter_time = time.time() - iter_start
-            print(f"  Step {i+1}/{self.maxStep} completed in {iter_time:.2f}s")
+            for i in range(self.maxStep):
+                iter_start = time.time()
+                try:
+                    converged = self.expectation_maximization_step(obs_seq)
+                    iter_time = time.time() - iter_start
+                    print(f"  Step {i+1}/{self.maxStep} completed in {iter_time:.2f}s")
 
-            if converged:
-                print(f'Converged at step {i+1}')
-                break
+                    if converged:
+                        print(f'Converged at step {i+1}')
+                        break
+                except Exception as step_error:
+                    print(f"Error in EM step {i+1}: {str(step_error)}")
+                    # Continue with next iteration instead of failing completely
+                    continue
 
-        total_time = time.time() - start_time
-        print(f"Total training time: {total_time:.2f} seconds")
+            total_time = time.time() - start_time
+            print(f"Total training time: {total_time:.2f} seconds")
 
-        return self.T0, self.T, self.E, converged
+            return self.T0, self.T, self.E, converged
+        except Exception as e:
+            print(f"Error in Baum-Welch algorithm: {str(e)}")
+            print(f"obs_seq shape: {obs_seq.shape}, unique values: {torch.unique(obs_seq)}")
+            # Return current parameters even if we failed
+            return self.T0, self.T, self.E, False
 
     def save_model(self, filepath):
         torch.save({

@@ -306,6 +306,19 @@ def main():
                 y_eval = val_loader.data[log_returns_col].values
                 train_labels = train_loader.data[label_col].values
                 eval_labels = val_loader.data[label_col].values
+        else:
+            # Basic train-test split without validation
+            X = data_loader.data[args.feature].values
+            y = data_loader.data[log_returns_col].values
+            labels = data_loader.data[label_col].values
+            
+            # Split data into train and test
+            split_idx = int(len(X) * (1 - args.test_size))
+            X_train, X_eval = X[:split_idx], X[split_idx:]
+            y_train, y_eval = y[:split_idx], y[split_idx:]
+            train_labels, eval_labels = labels[:split_idx], labels[split_idx:]
+            
+            print(f"Train set: {len(X_train)} samples, Test set: {len(X_eval)} samples")
 
         # Data for HMM
         if args.use_feature_for_hmm:
@@ -317,10 +330,21 @@ def main():
             hmm_eval_data = y_eval
             print(f"Using log returns for HMM training")
 
-        X_train_discrete = discretize_data(
-            hmm_train_data, num_bins=args.observations, strategy=args.discr_strategy)
-        X_eval_discrete = discretize_data(
-            hmm_eval_data, num_bins=args.observations, strategy=args.discr_strategy)
+        # Verify data before discretization
+        print(f"HMM train data shape: {hmm_train_data.shape}, range: [{np.min(hmm_train_data)}, {np.max(hmm_train_data)}]")
+
+        # Use a try-except block to catch potential issues
+        try:
+            X_train_discrete = discretize_data(
+                hmm_train_data, num_bins=args.observations, strategy=args.discr_strategy)
+            X_eval_discrete = discretize_data(
+                hmm_eval_data, num_bins=args.observations, strategy=args.discr_strategy)
+                
+            print(f"Discretized data: train shape {X_train_discrete.shape}, unique values: {np.unique(X_train_discrete)}")
+            
+        except Exception as e:
+            print(f"Error in discretization: {str(e)}")
+            raise
 
         if args.mode == 'forecasting':
             unique_bins = np.unique(X_train_discrete)
