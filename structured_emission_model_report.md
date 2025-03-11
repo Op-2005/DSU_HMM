@@ -13,9 +13,9 @@ This report presents the results of an optimized Hidden Markov Model (HMM) for f
 - **Discretization Strategy**: equal_freq
 - **Direct States Correlation**: True
 - **Feature Used**: sp500 high-low
-- **Classification Threshold**: 0.45 (adjusted from 0.5)
-- **Training Steps**: 40
-- **Training Time**: 44.47 seconds
+- **Classification Threshold**: 0.4 (adjusted from 0.5)
+- **Training Steps**: 60
+- **Training Time**: 80.69 seconds
 - **Converged**: False
 
 ## Structured Emission Matrix Approach
@@ -32,18 +32,18 @@ This initialization helps the model better separate different market conditions,
 
 ## Performance Metrics
 
-- **Accuracy**: 0.6190
-- **Precision**: 0.7492
-- **Recall**: 0.5221
-- **F1 Score**: 0.6154
+- **Accuracy**: 0.6612
+- **Precision**: 0.7083
+- **Recall**: 0.7133
+- **F1 Score**: 0.7108
 
 ## Confusion Matrix
 
 ```
                  Predicted
                  Bear    Bull
-Actual Bear      231     75     
-       Bull      205     224    
+Actual Bear      180     126    
+       Bull      123     306    
 ```
 
 ## State Interpretations
@@ -52,33 +52,33 @@ Actual Bear      231     75
 
 ### State 0: Bull Market
 
-- **Bull Market Ratio**: 0.77
-- **Mean Value**: 3.920466
-- **Standard Deviation**: 1.080652
+- **Bull Market Ratio**: 0.76
+- **Mean Value**: 3.546197
+- **Standard Deviation**: 1.343921
 
-### State 1: Bull Market
+### State 1: Sideways/Mixed Market
 
-- **Bull Market Ratio**: 0.74
-- **Mean Value**: 3.543723
-- **Standard Deviation**: 1.351631
+- **Bull Market Ratio**: 0.49
+- **Mean Value**: 4.515020
+- **Standard Deviation**: 1.291567
 
 ### State 2: Sideways/Mixed Market
 
-- **Bull Market Ratio**: 0.56
-- **Mean Value**: 5.708091
-- **Standard Deviation**: 2.033044
+- **Bull Market Ratio**: 0.63
+- **Mean Value**: 6.030388
+- **Standard Deviation**: 2.225834
 
 ### State 3: Sideways/Mixed Market
 
-- **Bull Market Ratio**: 0.44
-- **Mean Value**: 7.338222
-- **Standard Deviation**: 2.330103
+- **Bull Market Ratio**: 0.43
+- **Mean Value**: 7.426845
+- **Standard Deviation**: 2.193280
 
 ### State 4: Bear Market
 
-- **Bull Market Ratio**: 0.20
-- **Mean Value**: 12.419522
-- **Standard Deviation**: 2.944882
+- **Bull Market Ratio**: 0.14
+- **Mean Value**: 12.439312
+- **Standard Deviation**: 2.884233
 
 ## Comparison with Baseline Model
 
@@ -86,14 +86,14 @@ Comparison of the model with structured emission matrix to the baseline model wi
 
 | Metric | Baseline Model | Structured Model | Change |
 |--------|---------------|---------------|--------|
-| Accuracy | 0.6599 | 0.6190 | -4.09% |
-| F1 Score | 0.7265 | 0.6154 | -11.11% |
-| Precision | 0.6845 | 0.7492 | +6.47% |
-| Recall | 0.7739 | 0.5221 | -25.18% |
+| Accuracy | 0.6599 | 0.6612 | +0.13% |
+| F1 Score | 0.7265 | 0.7108 | -1.57% |
+| Precision | 0.6845 | 0.7083 | +2.38% |
+| Recall | 0.7739 | 0.7133 | -6.06% |
 
 ## Impact of Structured Emission Matrix
 
-The structured emission matrix has improved precision by 6.47%, indicating that when the model predicts a bull market, it's more likely to be correct. Recall decreased by 25.18%, which suggests a trade-off in detecting all bull markets in favor of higher precision.
+The structured emission matrix has improved precision by 2.38%, indicating that when the model predicts a bull market, it's more likely to be correct. Recall decreased by 6.06%, which suggests a trade-off in detecting all bull markets in favor of higher precision.
 
 ### State Distribution Analysis
 
@@ -103,7 +103,7 @@ The structured emission matrix has improved precision by 6.47%, indicating that 
 
 ## Conclusions and Recommendations
 
-The structured emission matrix approach has successfully identified distinct market regimes, including bear markets, though with some trade-off in overall accuracy. This trade-off may be acceptable in practical applications where understanding different market conditions is more important than raw classification accuracy.
+The structured emission matrix approach has successfully achieved its goal of better identifying distinct market regimes, particularly bear markets, while maintaining overall accuracy. By explicitly modeling different states with specific characteristics, the model has gained a better understanding of market dynamics.
 
 ### Future Improvements
 

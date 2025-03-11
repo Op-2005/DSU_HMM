@@ -153,7 +153,7 @@ def run_hyperparameter_test(
         raise
 
     # Train the HMM model
-    T, E, T0 = initialize_structured_hmm_params(states, observations)
+    T, E, T0 = initialize_hmm_params(states, observations)
     hmm = HiddenMarkovModel(T, E, T0, device='cpu', maxStep=steps)
 
     start_time = time.time()
@@ -192,66 +192,58 @@ def run_hyperparameter_test(
     return eval_metrics
 
 
-def initialize_structured_hmm_params(num_states, num_observations):
-    """Initialize HMM parameters with a structured emission matrix for better regime separation"""
-    
-    # Transition matrix - slightly higher probability to stay in the same state
+def initialize_hmm_params(num_states, num_observations):
+    """Initialize HMM parameters with structured emission matrix to better capture market regimes"""
+    # Transition matrix: (num_states, num_states)
     T = np.ones((num_states, num_states)) / num_states
-    # Increase self-transition probability to create more stable regimes
+    # Add some self-transition bias to make states stickier
     for i in range(num_states):
-        T[i, i] = 0.4  # Increased from default values
-    # Normalize to ensure rows sum to 1
+        T[i, i] += 0.2
     T = T / T.sum(axis=1, keepdims=True)
-    
-    # Structured emission matrix - create distinct patterns for different market regimes
+
+    # Emission matrix: (num_states, num_observations)
+    # Initialize with structured priors to help separate regimes
     E = np.ones((num_states, num_observations)) / num_observations
     
-    # For 5 states, we'll structure them as:
-    # - State 0: Strong bull market (higher probability for low volatility, positive returns)
-    # - State 1: Moderate bull market (medium volatility, positive returns)
-    # - State 2: Sideways market (low-medium volatility, flat returns)
-    # - State 3: Moderate bear market (medium volatility, negative returns)
-    # - State 4: Strong bear market (high volatility, negative returns)
+    # If we have at least 5 states, attempt to structure them
+    if num_states >= 5 and num_observations >= 15:
+        # State 0: Biased toward low volatility bull market (early observations)
+        E[0, :5] = 0.3 / 5
+        E[0, 5:] = 0.7 / (num_observations - 5)
+        
+        # State 1: Biased toward medium-low volatility bull market 
+        E[1, 3:8] = 0.4 / 5
+        E[1, :3] = 0.3 / 3
+        E[1, 8:] = 0.3 / (num_observations - 8)
+        
+        # State 2: Biased toward medium volatility (mixed market)
+        middle = num_observations // 2
+        range_size = min(5, num_observations // 4)
+        E[2, middle-range_size:middle+range_size] = 0.6 / (2*range_size)
+        E[2, :middle-range_size] = 0.2 / (middle-range_size)
+        E[2, middle+range_size:] = 0.2 / (num_observations-(middle+range_size))
+        
+        # State 3: Biased toward high volatility bear market (later observations)
+        high_start = max(0, num_observations - 8)
+        E[3, high_start:] = 0.7 / (num_observations - high_start)
+        E[3, :high_start] = 0.3 / high_start if high_start > 0 else 0
+        
+        # State 4: Biased toward highest volatility (extreme bear market)
+        extreme_start = max(0, num_observations - 4)
+        E[4, extreme_start:] = 0.8 / (num_observations - extreme_start)
+        E[4, :extreme_start] = 0.2 / extreme_start if extreme_start > 0 else 0
     
-    if num_states >= 5 and num_observations >= 10:
-        # Strong bull market state - higher probability for low volatility observations
-        E[0, :num_observations//5] = 0.7 / (num_observations//5)  # Concentrate on lowest volatility bins
-        E[0, num_observations//5:] = 0.3 / (num_observations - num_observations//5)
-        
-        # Moderate bull market state - higher probability for low-medium volatility
-        mid_low = num_observations//5
-        mid_high = 2*num_observations//5
-        E[1, mid_low:mid_high] = 0.6 / (mid_high - mid_low)
-        E[1, :mid_low] = 0.2 / mid_low
-        E[1, mid_high:] = 0.2 / (num_observations - mid_high)
-        
-        # Sideways market - higher probability for medium volatility
-        mid_low = 2*num_observations//5
-        mid_high = 3*num_observations//5
-        E[2, mid_low:mid_high] = 0.6 / (mid_high - mid_low)
-        E[2, :mid_low] = 0.2 / mid_low
-        E[2, mid_high:] = 0.2 / (num_observations - mid_high)
-        
-        # Moderate bear market - higher probability for medium-high volatility
-        mid_low = 3*num_observations//5
-        mid_high = 4*num_observations//5
-        E[3, mid_low:mid_high] = 0.6 / (mid_high - mid_low)
-        E[3, :mid_low] = 0.2 / mid_low
-        E[3, mid_high:] = 0.2 / (num_observations - mid_high)
-        
-        # Strong bear market - higher probability for high volatility
-        E[4, 4*num_observations//5:] = 0.7 / (num_observations - 4*num_observations//5)
-        E[4, :4*num_observations//5] = 0.3 / (4*num_observations//5)
+    # Add some random noise to break symmetry
+    E = E + np.random.uniform(0, 0.05, E.shape)
     
-    # Normalize to ensure rows sum to 1
+    # Ensure each row (state) sums to 1
     E = E / E.sum(axis=1, keepdims=True)
-    
-    # Initial state distribution - more balanced to improve recall
+
+    # Initial state distribution - slight bias toward bull market states
     T0 = np.ones(num_states) / num_states
     if num_states >= 5:
-        # More balanced initial distribution to improve recall
-        T0[:3] = 0.6 / 3  # Bias toward first 3 states (bull market)
-        T0[3:] = 0.4 / (num_states - 3)  # Less bias toward bear market states
+        T0[:3] = 0.7 / 3  # Bias toward first 3 states (bull market)
+        T0[3:] = 0.3 / (num_states - 3)  # Less bias toward bear market states
     
     return T, E, T0
 
@@ -565,20 +557,20 @@ def run_optimized_test():
     print("RUNNING OPTIMIZED MODEL TEST WITH STRUCTURED EMISSION MATRIX")
     print("="*70)
     
-    # Adjusted parameters to improve recall and accuracy
+    # Same parameters as before, but with adjusted threshold for bear market identification
     params = {
         'states': 5,  # This worked well in previous tests
         'observations': 20,
         'discr_strategy': 'equal_freq',
         'direct_states': True,
         'feature': 'sp500 high-low',
-        'steps': 60,  # Increased from 40 to allow better convergence
+        'steps': 40,  # Same as before
         'mode': 'classification',
         'target': 'sp500 close',
         'test_size': 0.2,
-        'val_size': 0.05,  # Reduced from 0.1 to provide more training data
+        'val_size': 0.1,
         'final_test': True,
-        'class_threshold': 0.4  # Adjusted from 0.45 to improve recall
+        'class_threshold': 0.45  # Adjusted from 0.5 to better identify bear markets
     }
     
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -666,7 +658,7 @@ def run_optimized_test():
         try:
             print(f"Initializing HMM with {params['states']} states and {params['observations']} observations")
             print(f"Using FIXED emission matrix with shape (num_states, num_observations)")
-            T, E, T0 = initialize_structured_hmm_params(params['states'], params['observations'])
+            T, E, T0 = initialize_hmm_params(params['states'], params['observations'])
             print(f"Transition matrix shape: {T.shape}")
             print(f"Emission matrix shape: {E.shape}")
             print(f"Initial state distribution shape: {T0.shape}")
