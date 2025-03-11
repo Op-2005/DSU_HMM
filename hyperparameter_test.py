@@ -679,16 +679,34 @@ def run_optimized_test():
         start_time = time.time()
         try:
             print(f"Training HMM with {params['states']} states and {params['observations']} observations")
-            T0, T, E, converged = hmm.Baum_Welch_EM(X_train_discrete)
+            print(f"Starting Baum-Welch EM with {params['steps']} max steps")
+            
+            # Track log-likelihood values during training
+            log_likelihoods = []
+            
+            # Modify the Baum-Welch function to return log-likelihood at each step
+            T0, T, E, converged, step_log_likelihoods = hmm.Baum_Welch_EM(
+                X_train_discrete, 
+                return_log_likelihood=True
+            )
+            
+            # Save log-likelihoods to file
+            with open('training_log_likelihoods.json', 'w') as f:
+                json.dump({
+                    'log_likelihoods': step_log_likelihoods,
+                    'steps': list(range(1, len(step_log_likelihoods) + 1))
+                }, f)
+            
             print(f"HMM training {'converged' if converged else 'did not converge'}")
             print(f"Final emission matrix shape: {E.shape}")
+            
+            training_time = time.time() - start_time
+            print(f"Total training time: {training_time:.2f} seconds")
         except Exception as e:
             print(f"Error during HMM training: {str(e)}")
-            print(f"Exception type: {type(e).__name__}")
             import traceback
             traceback.print_exc()
             raise
-        training_time = time.time() - start_time
 
         # Evaluate the model with adjusted threshold for better bear market identification
         try:
@@ -959,7 +977,7 @@ if __name__ == "__main__":
                     serializable_results[k] = v
             
             json.dump(serializable_results, f, indent=2)
-            print("Results saved to structured_emission_model_results.json")
+        print("Results saved to structured_emission_model_results.json")
             
         # Generate and save detailed report
         report = generate_optimized_model_report(results, model, baseline_results)
