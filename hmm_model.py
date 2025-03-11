@@ -57,9 +57,26 @@ class HiddenMarkovModel(object):
         shape = [self.N, self.S]
         
         try:
-            pathStates, pathScores, states_seq = self.initialize_viterbi_variables(
-                shape)
-            obs_prob_full = torch.log(self.E[x])
+            pathStates, pathScores, states_seq = self.initialize_viterbi_variables(shape)
+            
+            # KEY FIX: Access emission prob correctly - E has shape (num_states, num_observations)
+            # So we need to get probability for each state given observation x[t]
+            obs_prob_full = []
+            for t in range(self.N):
+                # For each observation x[t], get probabilities for all states
+                # This handles the emission matrix E with shape (num_states, num_observations)
+                obs_idx = x[t]
+                if obs_idx >= self.E.shape[1]:
+                    print(f"Warning: Observation index {obs_idx} out of bounds for emission matrix with {self.E.shape[1]} observations")
+                    # Clip to valid range
+                    obs_idx = self.E.shape[1] - 1
+                obs_prob = self.E[:, obs_idx]  # Get probability for all states given observation x[t]
+                obs_prob_full.append(obs_prob)
+            
+            obs_prob_full = torch.stack(obs_prob_full)
+            obs_prob_full = torch.log(obs_prob_full)
+            
+            # First step initialization with observation probability
             pathScores[0] = torch.log(self.T0) + obs_prob_full[0]
 
             for step, obs_prob in enumerate(obs_prob_full[1:]):
@@ -78,6 +95,7 @@ class HiddenMarkovModel(object):
         except Exception as e:
             print(f"Error in Viterbi inference: {str(e)}")
             print(f"x shape: {x.shape}, x unique values: {torch.unique(x)}")
+            print(f"x min: {x.min()}, x max: {x.max()}, E shape: {self.E.shape}")
             raise
 
     def initialize_forw_back_variables(self, shape):
@@ -146,9 +164,38 @@ class HiddenMarkovModel(object):
 
     def forward_backward(self, obs_prob_seq):
         try:
-            self._forward(obs_prob_seq)
-            obs_prob_seq_rev = torch.flip(obs_prob_seq, [0, 1])
-            self._backward(obs_prob_seq_rev)
+            # Check input shape - obs_prob_seq should be (seq_len, num_states)
+            if len(obs_prob_seq.shape) != 2 or obs_prob_seq.shape[1] != self.S:
+                raise ValueError(
+                    f"Expected obs_prob_seq shape (seq_len, {self.S}), got {obs_prob_seq.shape}")
+            
+            self.N = len(obs_prob_seq)
+            
+            # Initialize
+            self.forward = torch.zeros([self.N, self.S], dtype=torch.float64)
+            self.backward = torch.zeros([self.N, self.S], dtype=torch.float64)
+            
+            # Forward pass initialization with initial state distribution
+            self.forward[0, :] = self.T0 * obs_prob_seq[0, :]
+            self.forward[0, :] = self.forward[0, :] / self.forward[0, :].sum()
+            
+            # Forward pass iteration
+            for t in range(1, self.N):
+                self.forward[t, :] = torch.matmul(
+                    self.forward[t-1, :], self.T) * obs_prob_seq[t, :]
+                self.forward[t, :] = self.forward[t, :] / \
+                    self.forward[t, :].sum()
+                
+            # Backward pass initialization
+            self.backward[self.N-1, :] = torch.ones(
+                self.S, dtype=torch.float64)
+            
+            # Backward pass iteration
+            for t in range(self.N-2, -1, -1):
+                self.backward[t, :] = torch.matmul(
+                    self.T, (self.backward[t+1, :] * obs_prob_seq[t+1, :]))
+                self.backward[t, :] = self.backward[t, :] / \
+                    self.backward[t, :].sum()
         except Exception as e:
             print(f"Error in forward-backward algorithm: {str(e)}")
             raise
@@ -160,8 +207,18 @@ class HiddenMarkovModel(object):
         self.M = torch.zeros([self.N - 1, self.S, self.S], dtype=torch.float64)
 
         for t in range(self.N - 1):
+            # Get observation probabilities for each state
+            obs_idx_t1 = x[t + 1]
+            # Clip index if out of bounds
+            if obs_idx_t1 >= self.E.shape[1]:
+                obs_idx_t1 = self.E.shape[1] - 1
+                print(f"Warning: Observation index {x[t+1]} clipped to {obs_idx_t1}")
+            
+            # Get emission probabilities for all states given observation x[t+1]
+            emission_probs_t1 = self.E[:, obs_idx_t1]  # Shape: (num_states,)
+            
             tmp_0 = torch.matmul(self.forward[t].unsqueeze(0), self.T)
-            tmp_1 = tmp_0 * self.E[x[t + 1]].unsqueeze(0)
+            tmp_1 = tmp_0 * emission_probs_t1.unsqueeze(0)
             denom = torch.matmul(
                 tmp_1, self.backward[t + 1].unsqueeze(1)).squeeze()
 
@@ -169,8 +226,7 @@ class HiddenMarkovModel(object):
                 [self.S, self.S], dtype=torch.float64)
 
             for i in range(self.S):
-                numer = self.forward[t, i] * self.T[i, :] * \
-                    self.E[x[t+1]] * self.backward[t+1]
+                numer = self.forward[t, i] * self.T[i, :] * emission_probs_t1 * self.backward[t+1]
                 trans_re_estimate[i] = numer / denom
 
             self.M[t] = trans_re_estimate
@@ -180,6 +236,7 @@ class HiddenMarkovModel(object):
         T0_new = self.gamma[0, :]
         prod = (self.forward[self.N-1] * self.backward[self.N-1]).unsqueeze(0)
         s = prod / prod.sum()
+        # Restore these lines to maintain compatibility with existing code
         self.gamma = torch.cat([self.gamma, s], 0)
         self.prob_state_1.append(self.gamma[:, 0].detach().numpy())
 
@@ -189,12 +246,36 @@ class HiddenMarkovModel(object):
         if not isinstance(x, torch.Tensor):
             x = torch.tensor(x, dtype=torch.int64)
 
-        states_marginal = self.gamma.sum(0)
-        seq_one_hot = torch.zeros([len(x), self.O], dtype=torch.float64)
-        seq_one_hot.scatter_(1, x.unsqueeze(1), 1)
-        emission_score = torch.matmul(seq_one_hot.transpose(1, 0), self.gamma)
-
-        return emission_score / states_marginal
+        # Create a new emission matrix with shape (num_states, num_observations)
+        E_new = torch.zeros_like(self.E)
+        
+        # Count occurrences for each observation
+        for t in range(self.N):
+            obs_idx = x[t]
+            if obs_idx >= self.E.shape[1]:
+                print(f"Warning: Observation {obs_idx} out of bounds, clipping to {self.E.shape[1]-1}")
+                obs_idx = self.E.shape[1] - 1
+            
+            # Add probability of being in each state at time t to the corresponding emission entry
+            if t < len(self.gamma):
+                # For t < N-1, use gamma from the re_estimate_transition function
+                state_probs = self.gamma[t]
+            else:
+                # For t = N-1, calculate state probabilities
+                state_probs = self.forward[t] * self.backward[t]
+                state_probs = state_probs / state_probs.sum()
+            
+            # Update emission probability for each state i and observation obs_idx
+            for i in range(self.S):
+                E_new[i, obs_idx] += state_probs[i]
+        
+        # Normalize each row (each state) to sum to 1
+        row_sums = E_new.sum(dim=1, keepdim=True)
+        # Avoid division by zero
+        row_sums = torch.where(row_sums > 0, row_sums, torch.ones_like(row_sums))
+        E_new = E_new / row_sums
+        
+        return E_new
 
     def check_convergence(self, new_T0, new_transition, new_emission):
         with torch.no_grad():
@@ -211,10 +292,30 @@ class HiddenMarkovModel(object):
         if not isinstance(obs_seq, torch.Tensor):
             obs_seq = torch.tensor(obs_seq, dtype=torch.int64)
 
-        obs_prob_seq = self.E[obs_seq]
+        # Get emission probabilities for all states and all observations in sequence
+        # This builds a sequence of emission probabilities with shape (seq_len, num_states)
+        obs_prob_seq = []
+        for t in range(len(obs_seq)):
+            obs_idx = obs_seq[t]
+            if obs_idx >= self.E.shape[1]:
+                print(f"Warning: Observation {obs_idx} out of bounds, clipping to {self.E.shape[1]-1}")
+                obs_idx = self.E.shape[1] - 1
+            
+            # Get emission probabilities for all states given observation obs_idx
+            emission_probs = self.E[:, obs_idx]  # Shape: (num_states,)
+            obs_prob_seq.append(emission_probs)
+        
+        # Stack into tensor of shape (seq_len, num_states)
+        obs_prob_seq = torch.stack(obs_prob_seq)
+        
+        # Perform forward-backward algorithm
         self.forward_backward(obs_prob_seq)
+        
+        # Re-estimate parameters
         new_T0, new_transition = self.re_estimate_transition(obs_seq)
         new_emission = self.re_estimate_emission(obs_seq)
+        
+        # Check convergence
         converged = self.check_convergence(
             new_T0, new_transition, new_emission)
 
