@@ -9,8 +9,8 @@ from tqdm import tqdm
 import argparse
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
-from data_processor import FinancialDataLoader, discretize_data, map_bins_to_values
-from hmm_model import HiddenMarkovModel
+from ..data.data_processor import FinancialDataLoader, discretize_data, map_bins_to_values
+from ..models.hmm_model import HiddenMarkovModel
 
 np.random.seed(42)
 torch.manual_seed(42)

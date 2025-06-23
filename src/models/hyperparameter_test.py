@@ -15,8 +15,8 @@ from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from sklearn.model_selection import ParameterGrid
 from sklearn.decomposition import PCA
 
-from data_processor import FinancialDataLoader, discretize_data
-from hmm_model import HiddenMarkovModel
+from ..data.data_processor import FinancialDataLoader, discretize_data
+from .hmm_model import HiddenMarkovModel
 
 np.random.seed(42)
 torch.manual_seed(42)
